@@ -1467,8 +1467,8 @@ function bradyDisconnect(){
 
 // Fixed label spec: 0.75in x 2.919in, printed at 300 DPI for crisp thermal output
 var LABEL_DPI = 300;
-var LABEL_WIDTH_IN = 2.919;
-var LABEL_HEIGHT_IN = 0.75;
+var LABEL_WIDTH_IN = 0.75;
+var LABEL_HEIGHT_IN = 0.5;
 
 function getRealLabelDimensions(){
   var sdk = bradyPrinter.sdk;
@@ -1498,6 +1498,7 @@ function buildLabelCanvas(pn, title, condLabel){
     var real = getRealLabelDimensions();
     var widthIn = (real && real.width) || LABEL_WIDTH_IN;
     var heightIn = (real && real.height) || LABEL_HEIGHT_IN;
+    var usedRealDims = !!real;
 
     var canvasW = Math.round(widthIn * LABEL_DPI);
     var canvasH = Math.round(heightIn * LABEL_DPI);
@@ -1505,6 +1506,9 @@ function buildLabelCanvas(pn, title, condLabel){
     var canvas = document.createElement('canvas');
     canvas.width = canvasW;
     canvas.height = canvasH;
+    canvas.__labelWidthIn = widthIn;
+    canvas.__labelHeightIn = heightIn;
+    canvas.__usedRealDims = usedRealDims;
     var ctx = canvas.getContext('2d');
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvasW, canvasH);
@@ -1512,31 +1516,64 @@ function buildLabelCanvas(pn, title, condLabel){
     ctx.textBaseline = 'top';
 
     var padX = Math.round(canvasW * 0.025);
+    var availW = canvasW - padX * 2;
 
-    // 3 rows, roughly: PN (28%) / barcode (46%) / title+condition (26%)
-    var row1H = Math.round(canvasH * 0.28);
-    var row2H = Math.round(canvasH * 0.46);
+    // Figure out if the part number fits on one line at a reasonable size,
+    // or needs to wrap to two lines (common on small labels like 0.75in x 0.5in).
+    var baseRow1H = Math.round(canvasH * 0.28);
+    var maxFontOneLine = Math.round(baseRow1H * 0.78);
+    var oneLineFontSize = fitMonospaceFontSize(ctx, pn, availW, maxFontOneLine, 14);
+    var fitsOneLine = (oneLineFontSize >= 14) && (ctx.font = 'bold ' + oneLineFontSize + 'px monospace', ctx.measureText(pn).width <= availW);
+
+    var pnLines, row1H, pnFontSize;
+    if(fitsOneLine){
+      pnLines = [pn];
+      row1H = baseRow1H;
+      pnFontSize = oneLineFontSize;
+    } else {
+      // Split into two lines at the midpoint of a dash, closest to center, so it breaks cleanly
+      var splitPoints = [];
+      for(var i = 0; i < pn.length; i++){ if(pn[i] === '-') splitPoints.push(i); }
+      var mid = pn.length / 2;
+      var bestSplit = splitPoints.length ? splitPoints.reduce(function(a,b){ return Math.abs(a-mid) < Math.abs(b-mid) ? a : b; }) : Math.floor(mid);
+      var line1 = pn.slice(0, bestSplit + 1);
+      var line2 = pn.slice(bestSplit + 1);
+      pnLines = [line1, line2];
+      row1H = Math.round(canvasH * 0.40); // give 2-line text more vertical room
+      var maxFontTwoLine = Math.round((row1H / 2) * 0.85);
+      var longerLine = line1.length >= line2.length ? line1 : line2;
+      pnFontSize = fitMonospaceFontSize(ctx, longerLine, availW, maxFontTwoLine, 10);
+    }
+
+    var row2H = Math.round((canvasH - row1H) * 0.62);
     var row3H = canvasH - row1H - row2H;
 
-    // Row 1 - Part number, sized to fit the FULL string on one line (never truncated)
-    var pnMaxFontSize = Math.round(row1H * 0.78);
-    var pnFontSize = fitMonospaceFontSize(ctx, pn, canvasW - padX * 2, pnMaxFontSize, 14);
+    // Row 1 - Part number, one or two lines depending on available width
     ctx.font = 'bold ' + pnFontSize + 'px monospace';
-    ctx.fillText(pn, padX, Math.round((row1H - pnFontSize) / 2) - 2);
+    if(pnLines.length === 1){
+      ctx.fillText(pnLines[0], padX, Math.round((row1H - pnFontSize) / 2) - 1);
+    } else {
+      var lineGap = Math.round(pnFontSize * 1.15);
+      var totalTextH = lineGap * pnLines.length;
+      var startY = Math.round((row1H - totalTextH) / 2);
+      pnLines.forEach(function(line, idx){
+        ctx.fillText(line, padX, startY + idx * lineGap);
+      });
+    }
 
     // Row 2 - Barcode, full width, sized to fill its row height
     var row2Y = row1H;
-    drawBarcodeOnCanvas(ctx, pn, padX, row2Y, canvasW - padX * 2, row2H, function(){
+    drawBarcodeOnCanvas(ctx, pn, padX, row2Y, availW, row2H, function(){
 
       // Row 3 - Title (left) + condition (right), single line each, small font
       var row3Y = row1H + row2H;
-      var row3FontSize = Math.max(9, Math.round(row3H * 0.62));
+      var row3FontSize = Math.max(8, Math.round(row3H * 0.6));
       ctx.font = row3FontSize + 'px sans-serif';
       var titleY = row3Y + Math.round((row3H - row3FontSize) / 2) - 1;
 
       var condText = (condLabel || '').toUpperCase();
       var condWidth = condText ? ctx.measureText(condText).width : 0;
-      var titleMaxWidth = canvasW - padX * 2 - condWidth - (condText ? 14 : 0);
+      var titleMaxWidth = availW - condWidth - (condText ? 10 : 0);
       var titleFitted = fitTextToWidth(ctx, title, titleMaxWidth);
       ctx.fillText(titleFitted, padX, titleY);
 
@@ -1691,11 +1728,10 @@ function openLabelModal(part){
     if(imgEl) imgEl.src = canvas.toDataURL('image/png');
     var dimsEl = document.getElementById('label-dims-text');
     if(dimsEl){
-      var real = getRealLabelDimensions();
-      if(real){
-        dimsEl.textContent = real.width.toFixed(3) + 'in \u00d7 ' + real.height.toFixed(3) + 'in label (from printer)';
+      if(canvas.__usedRealDims){
+        dimsEl.textContent = canvas.__labelWidthIn.toFixed(3) + 'in \u00d7 ' + canvas.__labelHeightIn.toFixed(3) + 'in label (from printer)';
       } else {
-        dimsEl.textContent = LABEL_WIDTH_IN + 'in \u00d7 ' + LABEL_HEIGHT_IN + 'in label (estimated \u2014 printer didn\'t report real size)';
+        dimsEl.textContent = canvas.__labelWidthIn + 'in \u00d7 ' + canvas.__labelHeightIn + 'in label (estimated \u2014 printer didn\'t report real size)';
       }
     }
   });
@@ -1720,7 +1756,7 @@ function openLabelModal(part){
       w.document.write(
         '<html><head><title>Label - ' + pn + '</title><style>' +
         'body{margin:0;padding:10px;display:flex;align-items:center;justify-content:center}' +
-        'img{width:' + LABEL_WIDTH_IN + 'in;height:' + LABEL_HEIGHT_IN + 'in;image-rendering:crisp-edges}' +
+        'img{width:' + canvas.__labelWidthIn + 'in;height:' + canvas.__labelHeightIn + 'in;image-rendering:crisp-edges}' +
         '@media print{ body{padding:0} }' +
         '</style></head><body onload="window.print()">' +
         '<img src="' + imgData + '" alt="' + pn + '">' +
