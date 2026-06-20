@@ -1410,9 +1410,12 @@ function refreshPrinterStatusBar(){
   if(!bar) return;
   if(bradyPrinter.connected){
     bar.className = 'printer-status-bar connected';
+    var dims = getRealLabelDimensions();
+    var dimsText = dims ? (' \u00b7 label ' + dims.width.toFixed(3) + 'in \u00d7 ' + dims.height.toFixed(3) + 'in') : ' \u00b7 label size unknown';
     bar.innerHTML =
       '<div class="ps-label"><span class="ps-dot"></span>Brady ' + escapeHtml(bradyPrinter.status.printerModel || 'M211') + ' connected' +
         (bradyPrinter.status.batteryLevelPercentage != null ? ' \u00b7 ' + Math.round(bradyPrinter.status.batteryLevelPercentage) + '% battery' : '') +
+        escapeHtml(dimsText) +
       '</div>' +
       '<button class="btn btn-small" id="brady-disconnect-btn">Disconnect</button>';
     var dcBtn = document.getElementById('brady-disconnect-btn');
@@ -1476,6 +1479,18 @@ function getRealLabelDimensions(){
     return { width: w, height: h };
   }
   return null;
+}
+
+function debugBradyProperties(){
+  var sdk = bradyPrinter.sdk;
+  if(!sdk) return 'No SDK instance';
+  var keys = ['printerName','printerModel','batteryLevelPercentage','supplyRemainingPercentage',
+    'substrateWidth','substrateHeight','status','supplyName','dotsPerInch','zoneDimensions'];
+  var out = keys.map(function(k){
+    var val = sdk[k];
+    return k + ': ' + (typeof val === 'object' ? JSON.stringify(val) : String(val));
+  });
+  return out.join('\n');
 }
 
 function buildLabelCanvas(pn, title, condLabel){
@@ -1656,16 +1671,33 @@ function openLabelModal(part){
       '<button class="icon-btn" id="label-close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>' +
     '<div class="printer-status-bar" id="printer-status-bar"></div>' +
     '<div class="label-preview" style="display:flex;align-items:center;justify-content:center;padding:14px"><img id="label-preview-img" alt="' + escapeAttr(pn) + '" style="width:100%;max-width:340px;border:1px solid var(--border)"></div>' +
-    '<p style="font-size:10.5px;color:var(--text-faint);text-align:center;margin:-4px 0 14px">0.75in \u00d7 2.919in label</p>' +
+    '<p style="font-size:10.5px;color:var(--text-faint);text-align:center;margin:-4px 0 14px" id="label-dims-text">checking label size...</p>' +
     '<button class="btn primary" id="label-print-brady" style="width:100%;justify-content:center;margin-bottom:8px">' +
       '<svg viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>Print to Brady M211</button>' +
     '<button class="btn" id="label-print" style="width:100%;justify-content:center">' +
       '<svg viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>Print via browser dialog</button>' +
+    '<span class="setup-link" id="debug-printer-link" style="display:block;text-align:center;margin-top:10px">Show raw printer data</span>' +
+    '<pre id="debug-printer-output" style="display:none;font-size:10px;background:var(--surface2);padding:8px;margin-top:8px;white-space:pre-wrap;overflow-wrap:break-word"></pre>' +
     '</div></div>';
+
+  document.getElementById('debug-printer-link').addEventListener('click', function(){
+    var out = document.getElementById('debug-printer-output');
+    out.textContent = debugBradyProperties();
+    out.style.display = out.style.display === 'none' ? 'block' : 'none';
+  });
 
   buildLabelCanvas(pn, title, cond?cond.label:'').then(function(canvas){
     var imgEl = document.getElementById('label-preview-img');
     if(imgEl) imgEl.src = canvas.toDataURL('image/png');
+    var dimsEl = document.getElementById('label-dims-text');
+    if(dimsEl){
+      var real = getRealLabelDimensions();
+      if(real){
+        dimsEl.textContent = real.width.toFixed(3) + 'in \u00d7 ' + real.height.toFixed(3) + 'in label (from printer)';
+      } else {
+        dimsEl.textContent = LABEL_WIDTH_IN + 'in \u00d7 ' + LABEL_HEIGHT_IN + 'in label (estimated \u2014 printer didn\'t report real size)';
+      }
+    }
   });
 
   refreshPrinterStatusBar();
